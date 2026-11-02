@@ -1,0 +1,17 @@
+# build output (rebuild with build\build.ps1)
+dist/
+build/work/
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+
+# local state, captures and scratch
+.deepfocus*/
+*.log
+*.png.tmp
+tests/out/
+captures/
+*.bak
+*.tmp
