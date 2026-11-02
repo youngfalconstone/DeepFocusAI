@@ -34,7 +34,7 @@ if not os.environ.get("DEEPFOCUS_HOSTS"):
 from datetime import datetime  # noqa: E402
 
 from deepfocus import catalog, schedule, state  # noqa: E402
-from deepfocus.app import AIBlockDialog, App, Plan, ReviewDialog  # noqa: E402
+from deepfocus.app import AIBlockDialog, App, Plan, ReviewDialog, clean_apps, normalise_app_input  # noqa: E402
 
 errors: list[str] = []
 
@@ -125,6 +125,22 @@ def main():
             assert b.sync_plan(), "sync_plan failed"
             assert "news.example.com" in b.plan.hostnames()
             assert len(b.plan.processes()) > 0
+            # apps added by hand: normalised, deduplicated, remembered for the next plan, removable
+            app.settings["remembered_apps"] = []
+            b.plan.apps = []
+            b.add_app.set("Spotify"); b.add_app_name()
+            b.add_app.set(r"C:\Games\Launcher\MyGame.exe"); b.add_app_name()
+            b.add_app.set("spotify.exe"); b.add_app_name()  # duplicate, ignored
+            assert b.plan.apps == ["Spotify.exe", "MyGame.exe"], b.plan.apps
+            assert "Spotify.exe" in b.plan.processes() and "MyGame.exe" in b.plan.processes()
+            assert app.settings["remembered_apps"] == ["Spotify.exe", "MyGame.exe"]
+            assert Plan(app.settings).apps == ["Spotify.exe", "MyGame.exe"], "apps must carry over to a new plan"
+            assert b.app_list.get(0) == "Spotify.exe" and b.app_list.get(1) == "MyGame.exe"
+            assert b.app_list.size() == len(b.plan.processes()), "own apps first, then the services' apps"
+            b.app_list.selection_set(0); b.remove_apps()
+            assert b.plan.apps == ["MyGame.exe"] and app.settings["remembered_apps"] == ["MyGame.exe"]
+            assert clean_apps(["explorer.exe", "Discord", 5, "Discord.exe", "bad/name?.exe"]) == ["Discord.exe"]
+            assert normalise_app_input("explorer.exe") == "explorer.exe" and normalise_app_input("") is None
             # long-term and weekly modes
             b.mode_var.set("long"); b._mode_changed()
             b.long_var.set("14"); b._long_pick()

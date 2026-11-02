@@ -185,6 +185,8 @@ DEFAULT_SETTINGS = {
     "process_watch_default": True,
     "ipv6": True,
     "default_duration_min": 60,
+    # desktop apps (exe names) the user added in the builder; carried over into every new session plan
+    "remembered_apps": [],
     # AI Block: provider settings only; the API key lives in the Windows Credential Manager
     "ai_provider": "anthropic",
     "ai_model": "",

@@ -47,9 +47,13 @@ single-user PC.
 |---|---|
 | ![Session screen](docs/screenshots/session.png) | ![Builder](docs/screenshots/builder.png) |
 
-| AI Block review | Assistant |
+| Apps to close | AI Block review |
 |---|---|
-| ![AI Block](docs/screenshots/aiblock.png) | ![Assistant chat](docs/screenshots/chat.png) |
+| ![Apps to close](docs/screenshots/builder_apps.png) | ![AI Block](docs/screenshots/aiblock.png) |
+
+| Assistant | |
+|---|---|
+| ![Assistant chat](docs/screenshots/chat.png) | |
 
 ## What you get
 
@@ -68,7 +72,10 @@ single-user PC.
   repeating for up to 52 weeks. Switching happens automatically within a minute, with the app closed.
 - **Hide files** individually, by folder, or everything on the Desktop in one click, with an optional strict hide that
   denies reading until the session ends.
-- **Close apps**, block Windows notifications, close browsers at start, Pomodoro reminders and ambient focus sounds.
+- **Close apps.** Services bring their own desktop processes, and you can add any app yourself: type its name,
+  pick it from the list of running programs, or browse to the exe. Apps you add are remembered and already in place
+  the next time you set up a session. Also: block Windows notifications, close browsers at start, Pomodoro reminders
+  and ambient focus sounds.
 - **Analytics**: total and daily focus time, completed vs early, streak, 14-day chart.
 - **Presets**, dark and light themes, Windows accent colour, keyboard shortcuts for every page.
 

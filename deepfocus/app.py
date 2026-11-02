@@ -79,6 +79,30 @@ def single_instance() -> bool:
 
 
 # ======================================================================= plan
+def normalise_app_input(raw: str) -> str | None:
+    """What the user typed or picked, as a bare executable name: a path is reduced to its file name and a name
+    without an extension gets ".exe". None if it still is not a plausible executable name."""
+    s = aiblock.clean_text(raw, 200).split("\\")[-1].split("/")[-1].strip().strip('"')
+    if not s:
+        return None
+    if "." not in s:
+        s += ".exe"
+    return aiblock.normalise_app(s)
+
+
+def clean_apps(items) -> list[str]:
+    """A stored list of executable names made safe: strings only, normalised, protected names dropped, no duplicates."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in items if isinstance(items, list) else []:
+        exe = normalise_app_input(raw) if isinstance(raw, str) else None
+        if not exe or aiblock.app_status(exe)[0] == "protected" or exe.lower() in seen:
+            continue
+        seen.add(exe.lower())
+        out.append(exe)
+    return out[:200]
+
+
 class Plan:
     """Everything the session builder collects before a session starts."""
 
@@ -88,6 +112,8 @@ class Plan:
         self.custom: list[str] = []
         self.removed: set[str] = set()
         self.files: list[str] = []
+        # desktop apps added by hand; they carry over from the last session via settings["remembered_apps"]
+        self.apps: list[str] = clean_apps(settings.get("remembered_apps", []))
         self.restore_at = datetime.now() + timedelta(minutes=int(settings.get("default_duration_min", 60)))
         self.schedule: dict = schedule.once()
         self.extended = bool(settings.get("extended_subdomains", True))
@@ -117,12 +143,25 @@ class Plan:
         return [h for h in out if h not in self.removed]
 
     def processes(self) -> list[str]:
+        """Executables to close: the selected services' processes plus the apps added by hand."""
         out: list[str] = []
-        for s in self.services.values():
-            for p in s.processes:
-                if p.lower() not in [o.lower() for o in out]:
-                    out.append(p)
+        seen: set[str] = set()
+        for p in [p for s in self.services.values() for p in s.processes] + list(self.apps):
+            if p.lower() not in seen:
+                seen.add(p.lower())
+                out.append(p)
         return out
+
+    def add_app(self, exe: str) -> bool:
+        """Add one executable name (already normalised). False if it was there already."""
+        if exe.lower() in {a.lower() for a in self.apps}:
+            return False
+        self.apps.append(exe)
+        return True
+
+    def remove_apps(self, exes: set[str]) -> None:
+        low = {e.lower() for e in exes}
+        self.apps = [a for a in self.apps if a.lower() not in low]
 
     def is_weekly(self) -> bool:
         return schedule.is_weekly(self.schedule)
@@ -135,7 +174,8 @@ class Plan:
 
     def to_preset(self) -> dict:
         return {"services": list(self.services), "custom": self.custom, "removed": sorted(self.removed),
-                "files": self.files, "options": self.options, "goal": self.goal, "schedule": self.schedule,
+                "files": self.files, "apps": self.apps, "options": self.options, "goal": self.goal,
+                "schedule": self.schedule,
                 "duration_min": max(1, int((self.restore_at - datetime.now()).total_seconds() // 60))}
 
     def load_preset(self, p: dict) -> None:
@@ -143,6 +183,8 @@ class Plan:
         self.custom = list(p.get("custom", []))
         self.removed = set(p.get("removed", []))
         self.files = [f for f in p.get("files", []) if not guard.forbidden_reason(f)]
+        if "apps" in p:
+            self.apps = clean_apps(p.get("apps", []))
         self.options.update(p.get("options", {}))
         self.goal = p.get("goal", self.goal)
         self.schedule = schedule.normalize(p.get("schedule"))
@@ -2054,6 +2096,28 @@ class BuilderPage(Page):
         self.add_host.bind_return(self.add_custom_host)
         Button(ar, t, "Add", self.add_custom_host, kind="standard", padx=18).pack(side="left", padx=(8, 0))
 
+        # --- apps
+        c = card(ICON["stop"], "Apps to close",
+                 "Desktop programs that are closed every 2 seconds while this window is open. Services you block "
+                 "bring their own apps; add any other program here by name, from the list of running programs, or "
+                 "by browsing to its exe. Apps you add are remembered for your next session.")
+        xr = row(c, pady=(14, 0))
+        self.add_app = Field(xr, t, placeholder="App name or exe, e.g. Spotify or Spotify.exe")
+        self.add_app.pack(side="left", fill="x", expand=True)
+        self.add_app.bind_return(self.add_app_name)
+        Button(xr, t, "Add", self.add_app_name, kind="standard", padx=18).pack(side="left", padx=(8, 0))
+        self.btn_running = Button(xr, t, "Running now", self.running_apps, kind="standard", padx=12, icon=ICON["list"])
+        self.btn_running.pack(side="left", padx=(8, 0))
+        Button(xr, t, "Browse", self.browse_app, kind="standard", padx=12, icon=ICON["folder"]).pack(side="left",
+                                                                                                        padx=(8, 0))
+        ac = row(c, pady=(12, 4))
+        self.app_count = label(ac, t, "Apps to close (0)", "small", "muted")
+        self.app_count.pack(side="left")
+        Button(ac, t, "Remove selected", self.remove_apps, kind="subtle", font="small", padx=10, pady=4).pack(side="right")
+        lp = ListPanel(c, t, height=4)
+        lp.pack(fill="x")
+        self.app_list = lp.list
+
         # --- files
         c = card(ICON["hide"], "Hide files until the session ends",
                  "Only the Hidden and System attributes change. Files are never moved, copied or modified, and reappear "
@@ -2376,6 +2440,15 @@ class BuilderPage(Page):
         self.file_list.delete(0, "end")
         for f in self.plan.files:
             self.file_list.insert("end", f)
+        svc_apps = [p for p in self.plan.processes() if p.lower() not in {a.lower() for a in self.plan.apps}]
+        self.app_list.delete(0, "end")
+        for a in self.plan.apps:
+            self.app_list.insert("end", a)
+        for p in svc_apps:
+            self.app_list.insert("end", f"{p}   (from a blocked service)")
+        n = len(self.plan.processes())
+        extra = f", {len(self.plan.apps)} added by you" if self.plan.apps else ""
+        self.app_count.configure(text=f"Apps to close ({n}{extra})")
         self._time_changed()
 
     # ---- services -----------------------------------------------------------
@@ -2488,6 +2561,68 @@ class BuilderPage(Page):
         self.plan.removed.clear()
         self.refresh_lists()
 
+    # ---- apps -------------------------------------------------------------
+    def _remember_apps(self):
+        """The apps added by hand are the starting point of every later plan."""
+        self.app.settings["remembered_apps"] = list(self.plan.apps)
+        state.save_settings(self.app.settings)
+
+    def _add_app(self, raw: str, interactive: bool = True) -> bool:
+        exe = normalise_app_input(raw)
+        if not exe:
+            if interactive:
+                messagebox.showwarning(APP_NAME, f"\"{aiblock.clean_text(raw, 80)}\" is not a valid program name. Use the "
+                                       "executable name, for example Spotify.exe.", parent=self.app)
+            return False
+        status, why = aiblock.app_status(exe)
+        if status == "protected":
+            if interactive:
+                messagebox.showwarning(APP_NAME, f"{exe} will not be added. {why}", parent=self.app)
+            return False
+        if status == "broad" and interactive and not messagebox.askyesno(
+                APP_NAME, f"{exe} is a web browser. Closing it every 2 seconds affects everything you do online, "
+                "not just one service. Add it anyway?", parent=self.app):
+            return False
+        added = self.plan.add_app(exe)
+        self._remember_apps()
+        self.refresh_lists()
+        return added
+
+    def add_app_name(self):
+        raw = self.add_app.value().strip()
+        if not raw:
+            return
+        if self._add_app(raw) or normalise_app_input(raw):
+            self.add_app.clear()
+
+    def browse_app(self):
+        p = filedialog.askopenfilename(parent=self.app, title="Program to close during the session",
+                                       filetypes=[("Programs", "*.exe"), ("All files", "*.*")])
+        if p:
+            self._add_app(p)
+
+    def running_apps(self):
+        """Pick from the programs running right now (system processes and the already added ones left out)."""
+        have = {p.lower() for p in self.plan.processes()}
+        names = sorted({n for n in procwatch.running_images()
+                        if n.endswith(".exe") and n not in have and aiblock.app_status(n)[0] == "ok"})
+        items = [(n, (lambda n=n: self._add_app(n))) for n in names[:40]]
+        if not items:
+            items = [("No other programs are running", None)]
+        b = self.btn_running
+        popup_menu(b, self.theme, items, b.winfo_rootx(), b.winfo_rooty() + b.winfo_height() + 4)
+
+    def remove_apps(self):
+        sel = {self.app_list.get(i).split("   (")[0] for i in self.app_list.curselection()}
+        own = {a for a in self.plan.apps if a in sel}
+        if len(sel) > len(own):
+            messagebox.showinfo(APP_NAME, "Apps that come from a blocked service are removed together with that "
+                                "service (the chips above).", parent=self.app)
+        if own:
+            self.plan.remove_apps(own)
+            self._remember_apps()
+            self.refresh_lists()
+
     # ---- files ------------------------------------------------------------
     def _add_paths(self, ps):
         refused = []
@@ -2595,8 +2730,8 @@ class BuilderPage(Page):
             return
         if not self.sync_plan():
             return
-        if not self.plan.hostnames() and not self.plan.files:
-            messagebox.showwarning(APP_NAME, "Add at least one service, hostname or file first.", parent=self.app)
+        if not self.plan.hostnames() and not self.plan.files and not self.plan.processes():
+            messagebox.showwarning(APP_NAME, "Add at least one service, hostname, app or file first.", parent=self.app)
             return
         ReviewDialog(self.app, self.plan, self.start)
 

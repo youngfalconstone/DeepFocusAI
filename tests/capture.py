@@ -113,13 +113,18 @@ else:
 
 def setup():
     global page
-    if page in ("builder", "builder_weekly", "builder_long"):
+    if page in ("builder", "builder_weekly", "builder_long", "builder_apps"):
         b = app.pages["builder"]
         b.goal_var.set("Finish the quarterly report draft")
         b.add_service(catalog.get("youtube"))
         b.add_service(catalog.get("discord"))
         b.add_service(catalog.get("reddit"))
-        b.search.set("twit"); b.find()
+        if page == "builder_apps":
+            b.plan.apps = ["Spotify.exe", "Steam.exe", "Battle.net.exe"]
+            b.refresh_lists()
+            app.after(300, lambda: b.scroll.scroll_to(0.30))
+        else:
+            b.search.set("twit"); b.find()
         if page == "builder_weekly":
             b.mode_var.set("weekly"); b._mode_changed(); b.weeks_var.set(4)
             app.after(300, lambda: b.scroll.scroll_to(0.52))
