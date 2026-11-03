@@ -1,6 +1,7 @@
 # build output (rebuild with build\build.ps1)
 dist/
 build/work/
+build/stage/
 
 # python
 __pycache__/
