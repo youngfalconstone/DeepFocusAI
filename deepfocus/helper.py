@@ -3,6 +3,7 @@ the GUI itself can stay unelevated and ask first.
 
 Usage (always invoked by the GUI or Task Scheduler, rarely by hand):
     DeepFocus.exe helper apply   <plan.json> --result <result.json>
+    DeepFocus.exe helper extend  <extend.json> --result <result.json>   (more hostnames for the running session)
     DeepFocus.exe helper restore [--result <result.json>] [--if-expired] [--reason early|scheduled|manual|startup]
     DeepFocus.exe helper enforce [--result <result.json>]
     DeepFocus.exe helper status
@@ -34,7 +35,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from xml.sax.saxutils import escape
 
-from . import doh, filehide, guard, hostsfile, notif, paths, schedule, state
+from . import aiblock, doh, filehide, guard, hostsfile, notif, paths, schedule, state
 
 CREATE_NO_WINDOW = 0x08000000
 
@@ -428,6 +429,116 @@ def apply(plan_path: str, result_path: str | None) -> int:
     return 0
 
 
+# ---------------------------------------------------------------- extend ---
+_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9:_-]{0,79}$")
+_PROC_RE = re.compile(r"^[A-Za-z0-9 _.\-+()!&~]{1,80}\.exe$", re.IGNORECASE)
+
+
+def validate_extension(ext, session: dict) -> dict:
+    """Re-check an extension request (more hostnames, services and processes for the running session). Returns
+    the cleaned lists plus the entries that were dropped and why. Raises PlanError on a malformed request."""
+    if not isinstance(ext, dict):
+        raise PlanError("extension is not a JSON object")
+    if not isinstance(ext.get("id"), str) or ext.get("id") != session.get("id"):
+        raise PlanError("extension does not name the running session")
+    for key, cap in (("hostnames", MAX_HOSTNAMES), ("services", 200), ("processes", 500)):
+        v = ext.get(key, [])
+        if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
+            raise PlanError(f"extension field '{key}' must be a list of strings")
+        if len(v) > cap:
+            raise PlanError(f"extension field '{key}' has too many entries ({len(v)} > {cap})")
+        ext[key] = [x[:1024] for x in v]
+    hosts: list[str] = []
+    dropped: list[str] = []
+    for h in ext["hostnames"]:
+        n = hostsfile.normalise_host(h)
+        if not n:
+            dropped.append(f"{h.strip()[:80]}: not a valid hostname")
+        elif n in hostsfile.PROTECTED:
+            dropped.append(f"{n}: protected, blocking it would break Windows or sign-in")
+        elif n not in hosts:
+            hosts.append(n)
+    services = [k for k in ext["services"] if _KEY_RE.match(k)]
+    procs: list[str] = []
+    for p in ext["processes"]:
+        p = p.strip()
+        if not _PROC_RE.match(p):
+            dropped.append(f"{p[:80]}: not a valid program name")
+        elif p.lower() in aiblock.PROTECTED_PROCESSES or p.lower().startswith("deepfocus"):
+            dropped.append(f"{p}: a Windows or DeepFocus process is never closed")
+        elif p.lower() not in {x.lower() for x in procs}:
+            procs.append(p)
+    return {"hostnames": hosts, "services": services, "processes": procs, "dropped": dropped}
+
+
+def extend(plan_path: str, result_path: str | None) -> int:
+    """Add hostnames (and the services/processes they came from) to the running session. The hosts block is
+    rewritten at once unless the session is inside a free window, in which case the enforce task applies the
+    new list when the window ends. Everything else about the session (files, options, schedule) is untouched."""
+    if not _state_ok(result_path):
+        return 2
+    paths.ensure_dirs()
+    problem = _plan_path_ok(plan_path)
+    if problem:
+        _write_result(result_path, {"ok": False, "error": f"Refused: {problem}."})
+        return 2
+    with open(plan_path, "r", encoding="utf-8") as f:
+        ext = json.load(f)
+    session = state.load_session()
+    if not state.session_is_active(session) or state.session_expired(session):
+        _write_result(result_path, {"ok": False, "error": "There is no running session to add to."})
+        return 2
+    try:
+        clean = validate_extension(ext, session)
+    except PlanError as e:
+        _write_result(result_path, {"ok": False, "error": f"Refused: {e}."})
+        return 2
+    have = {h.lower() for h in session.get("hostnames", []) if isinstance(h, str)}
+    new_hosts = [h for h in clean["hostnames"] if h not in have]
+    if len(have) + len(new_hosts) > MAX_HOSTNAMES:
+        _write_result(result_path, {"ok": False, "error": f"The session would exceed {MAX_HOSTNAMES} hostnames."})
+        return 2
+    session["hostnames"] = [h for h in session.get("hostnames", []) if isinstance(h, str)] + new_hosts
+    for k in clean["services"]:
+        if k not in session.setdefault("services", []):
+            session["services"].append(k)
+    seen = {p.lower() for p in session.get("processes", []) if isinstance(p, str)}
+    for p in clean["processes"]:
+        if p.lower() not in seen:
+            seen.add(p.lower())
+            session.setdefault("processes", []).append(p)
+    warnings = list(clean["dropped"])
+    paused = bool(session.get("paused"))
+    if new_hosts and not paused:
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        try:
+            shutil.copy2(paths.HOSTS_PATH, paths.BACKUP_DIR / f"hosts_{stamp}_{session['id']}_add.bak")
+        except OSError as e:
+            warnings.append(f"Could not back up hosts file: {e}")
+        state.prune_backups()
+        opts = session.get("options", {})
+        text = hostsfile.read_hosts(paths.HOSTS_PATH)
+        new_text = hostsfile.apply_block(text, session["hostnames"], session["id"], session["restore_at"],
+                                         ipv6=bool(opts.get("ipv6", True)))
+        try:
+            hostsfile.write_hosts(paths.HOSTS_PATH, new_text)
+        except OSError as e:
+            _write_result(result_path, {"ok": False, "error": f"Could not write hosts file: {e}", "warnings": warnings})
+            return 3
+        flush_dns()
+    session.setdefault("schedule_log", []).append(
+        f"{state.now_iso()} added {len(new_hosts)} hostname(s)" + (" (applies when the free window ends)" if paused else ""))
+    session["schedule_log"] = session["schedule_log"][-200:]
+    state.save_session(session)
+    state.log(f"extend: session {session['id']} +{len(new_hosts)} hosts -> {len(session['hostnames'])}, "
+              f"+{len(clean['services'])} services, +{len(clean['processes'])} processes"
+              + (", paused (applied later)" if paused else "")
+              + (" | " + " | ".join(warnings) if warnings else ""))
+    _write_result(result_path, {"ok": True, "added": len(new_hosts), "total": len(session["hostnames"]),
+                                "paused": paused, "warnings": warnings})
+    return 0
+
+
 # --------------------------------------------------------------- restore ---
 def restore(result_path: str | None, if_expired: bool, reason: str) -> int:
     if not _state_ok(result_path):
@@ -611,12 +722,17 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--reason", default="manual")
     e = sub.add_parser("enforce")
     e.add_argument("--result")
+    x = sub.add_parser("extend")
+    x.add_argument("plan")
+    x.add_argument("--result")
     sub.add_parser("status")
     ns = ap.parse_args(argv)
     result_path = getattr(ns, "result", None)
     try:
         if ns.cmd == "apply":
             return apply(ns.plan, result_path)
+        if ns.cmd == "extend":
+            return extend(ns.plan, result_path)
         if ns.cmd == "restore":
             return restore(result_path, ns.if_expired, ns.reason)
         if ns.cmd == "enforce":

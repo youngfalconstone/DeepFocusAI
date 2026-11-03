@@ -940,6 +940,219 @@ class AppsDialog(ModalDialog):
         self.destroy()
 
 
+class AddBlockDialog(ModalDialog):
+    """Add services or hostnames to the running session. Builds the same kind of list as the session builder,
+    shows exactly what is new, then hands it to the elevated helper's `extend` command (one UAC prompt)."""
+
+    def __init__(self, app: App, session: dict, on_done=None):
+        super().__init__(app, "Add to block", 720, 640)
+        t = self.theme
+        self.session = session
+        self.on_done = on_done
+        self.extended = bool(app.settings.get("extended_subdomains", True))
+        self.services: dict[str, catalog.Service] = {}
+        self.custom: list[str] = []
+        self.have = {h.lower() for h in session.get("hostnames", []) if isinstance(h, str)}
+        b = self.body
+        label(b, t, "Add to block", "h1").pack(anchor="w")
+        label(b, t, "Added to the running session for the rest of it. Windows asks once for administrator approval "
+              "when you press Add and apply.", "small", "muted", wraplength=660, justify="left").pack(anchor="w", pady=(0, 12))
+        r = row(b)
+        self.search = Field(r, t, placeholder="YouTube, Discord, reddit.com ...", icon=ICON["search"])
+        self.search.pack(side="left", fill="x", expand=True)
+        self.search.bind_return(self.find)
+        Button(r, t, "Find", self.find, kind="primary", padx=16).pack(side="left", padx=(8, 0))
+        self.results = tk.Frame(b, bg=t["bg"])
+        self.results.pack(fill="x")
+        ar = row(b, pady=(10, 0))
+        self.add_host = Field(ar, t, placeholder="Or add a hostname, e.g. news.example.com")
+        self.add_host.pack(side="left", fill="x", expand=True)
+        self.add_host.bind_return(self.add_custom_host)
+        Button(ar, t, "Add", self.add_custom_host, kind="standard", padx=16).pack(side="left", padx=(8, 0))
+        label(b, t, "Selected", "small", "muted").pack(anchor="w", pady=(12, 4))
+        self.chips = tk.Frame(b, bg=t["bg"])
+        self.chips.pack(fill="x")
+        hr = row(b, pady=(10, 4))
+        self.count = label(hr, t, "", "small", "muted")
+        self.count.pack(side="left")
+        lp = ListPanel(b, t, height=6, selectmode="browse")
+        lp.pack(fill="both", expand=True)
+        self.list = lp.list
+        self.btn_cancel, self.btn_apply = self.buttons([("Cancel", self.destroy, "standard"),
+                                                        ("Add and apply", self.apply, "primary")])
+        self.search.focus()
+        self.refresh()
+
+    # ---- building the list ----
+    def new_hostnames(self) -> list[str]:
+        out: list[str] = []
+        for s in self.services.values():
+            for h in catalog.hostnames_for(s, self.extended):
+                if h.lower() not in self.have and h not in out:
+                    out.append(h)
+        for h in self.custom:
+            if h.lower() not in self.have and h not in out:
+                out.append(h)
+        return out
+
+    def already(self) -> int:
+        n = 0
+        for s in self.services.values():
+            n += sum(1 for h in catalog.hostnames_for(s, self.extended) if h.lower() in self.have)
+        return n + sum(1 for h in self.custom if h.lower() in self.have)
+
+    def payload(self) -> dict:
+        """What goes to the helper: new hostnames plus the services and their processes."""
+        procs: list[str] = []
+        for s in self.services.values():
+            for p in s.processes:
+                if p.lower() not in {x.lower() for x in procs}:
+                    procs.append(p)
+        return {"id": self.session.get("id"), "hostnames": self.new_hostnames(),
+                "services": [k for k in self.services if k not in self.session.get("services", [])],
+                "processes": procs}
+
+    def refresh(self):
+        t = self.theme
+        for w in self.chips.winfo_children():
+            w.destroy()
+        if not self.services and not self.custom:
+            label(self.chips, t, "Nothing selected yet.", "small", "faint").pack(anchor="w")
+        for key, s in list(self.services.items()):
+            Chip(self.chips, t, s.name, on_remove=lambda k=key: self.remove_service(k)).pack(side="left", padx=(0, 6), pady=2)
+        if self.custom:
+            Chip(self.chips, t, f"Custom  {len(self.custom)}", on_remove=self.clear_custom, accent=True)\
+                .pack(side="left", padx=(0, 6), pady=2)
+        hosts = self.new_hostnames()
+        self.list.delete(0, "end")
+        for h in hosts:
+            self.list.insert("end", h)
+        skipped = self.already()
+        self.count.configure(text=f"New hostnames to block ({len(hosts)})"
+                             + (f", {skipped} already blocked by this session" if skipped else ""))
+        self.btn_apply.set_enabled(bool(hosts) or any(k not in self.session.get("services", []) for k in self.services))
+
+    def _clear_results(self):
+        for w in self.results.winfo_children():
+            w.destroy()
+
+    def find(self):
+        t = self.theme
+        q = self.search.value().strip()
+        self._clear_results()
+        if not q:
+            return
+        hits = catalog.search(q)[:5]
+        box = Surface(self.results, t, pad=12, fill=t["surface2"], outline=t["stroke"], radius=t.ctrl_radius)
+        box.pack(fill="x", pady=(8, 0))
+        bb = box.body
+        for s in hits:
+            r = row(bb, pady=(0, 4))
+            Button(r, t, "Add", lambda s=s: self.add_service(s), kind="primary", font="small", padx=12, pady=3)\
+                .pack(side="left")
+            label(r, t, s.name, "bold").pack(side="left", padx=(10, 8))
+            label(r, t, f"{s.category}, {len(catalog.hostnames_for(s, self.extended))} hostnames", "small", "muted")\
+                .pack(side="left")
+        generic = catalog.generic_hostnames(q, self.extended)
+        if generic:
+            r = row(bb, pady=(6 if hits else 0, 0))
+            Button(r, t, "Add", lambda: self.add_generic(generic), kind="standard", font="small", padx=12, pady=3)\
+                .pack(side="left")
+            label(r, t, f"Block \"{aiblock.clean_text(q, 60)}\" as a website", "bold").pack(side="left", padx=(10, 8))
+            label(r, t, f"{len(generic)} guessed hostnames", "small", "muted").pack(side="left")
+        if not hits and not generic:
+            label(bb, t, "No match. Try another name, or add a hostname below.", "small", "muted").pack(anchor="w")
+        Button(bb, t, "Close", self._clear_results, kind="link", font="small", padx=0, pady=2).pack(anchor="e")
+
+    def add_service(self, s: catalog.Service):
+        self.services[s.key] = s
+        self.search.clear()
+        self._clear_results()
+        self.refresh()
+
+    def add_generic(self, hosts: list[str]):
+        for h in hosts:
+            if h not in self.custom:
+                self.custom.append(h)
+        self.search.clear()
+        self._clear_results()
+        self.refresh()
+
+    def remove_service(self, key: str):
+        self.services.pop(key, None)
+        self.refresh()
+
+    def clear_custom(self):
+        self.custom.clear()
+        self.refresh()
+
+    def add_custom_host(self):
+        raw = self.add_host.value()
+        n = hostsfile.normalise_host(raw)
+        if not n:
+            messagebox.showwarning(APP_NAME, f"\"{aiblock.clean_text(raw, 80)}\" is not a valid hostname.", parent=self)
+            return
+        if n in hostsfile.PROTECTED:
+            messagebox.showwarning(APP_NAME, f"{n} is on the protected list because blocking it breaks Windows or "
+                                   "sign-in. It will not be added.", parent=self)
+            return
+        if n not in self.custom:
+            self.custom.append(n)
+        self.add_host.clear()
+        self.refresh()
+
+    # ---- applying ----
+    def apply(self):
+        payload = self.payload()
+        if not payload["hostnames"] and not payload["services"]:
+            return
+        current = state.load_session()
+        if not state.session_is_active(current) or current.get("id") != self.session.get("id"):
+            messagebox.showinfo(APP_NAME, "The session has ended, so there is nothing to add to.", parent=self)
+            self.destroy()
+            return
+        paths.ensure_dirs()
+        ext_path = paths.STATE_DIR / "extend.json"
+        ext_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        self.btn_apply.set_enabled(False)
+        app = self.app
+
+        def done(res):
+            try:
+                ext_path.unlink()
+            except OSError:
+                pass
+            if res.get("ok"):
+                s = state.load_session()
+                if s:
+                    app.resume_watcher(s)
+                n = res.get("added", 0)
+                if res.get("paused"):
+                    msg = f"{n} hostname(s) recorded. They are blocked when the current free window ends."
+                else:
+                    msg = f"Now blocking {res.get('total', 0)} hostnames ({n} new)."
+                warn = res.get("warnings") or []
+                if warn:
+                    msg += "\n\nNot added:\n" + "\n".join(f"  {w}" for w in warn[:8])
+                app.set_status(f"Blocking {res.get('total', 0)} hostnames", "active")
+                app.toast(APP_NAME, f"{n} hostname(s) added to the session.")
+                if self.winfo_exists():
+                    self.destroy()
+                if warn:
+                    messagebox.showinfo(APP_NAME, msg, parent=app)
+            else:
+                if self.winfo_exists():
+                    self.btn_apply.set_enabled(True)
+                if not res.get("cancelled"):
+                    messagebox.showerror(APP_NAME, "Could not add to the session:\n" + res.get("error", "unknown error"),
+                                         parent=self if self.winfo_exists() else app)
+            app.pages["dashboard"].refresh()
+            if self.on_done:
+                self.on_done(res)
+
+        app.run_elevated(["extend", str(ext_path)], done, "Adding to the running session")
+
+
 class AIBlockDialog(ModalDialog):
     """Type a service name, get an AI-suggested block list (domains, apps, files), review every entry, then save
     it as a named list that the Block dropdown, the builder and presets treat like a built-in service."""
@@ -1897,8 +2110,11 @@ class DashboardPage(Page):
         txt = (f"Services: {svc}\nApps being closed: {procs}\nProtection: {', '.join(prot)}{plan_line}"
                f"\nHosts backup: {session.get('hosts_backup') or 'none'}")
         label(details.body, t, txt, "tiny", "muted", wraplength=400, justify="left").pack(anchor="w")
-        Button(details.body, t, "Apps to close", self._edit_apps, kind="standard", font="small", padx=10, pady=4,
-               icon=ICON["cross"]).pack(anchor="w", pady=(10, 0))
+        br = row(details.body, pady=(10, 0))
+        Button(br, t, "Add to block", self._add_block, kind="primary", font="small", padx=10, pady=4,
+               icon=ICON["globe"]).pack(side="left")
+        Button(br, t, "Apps to close", self._edit_apps, kind="standard", font="small", padx=10, pady=4,
+               icon=ICON["cross"]).pack(side="left", padx=(8, 0))
 
         self.restore_btn = None
         self._overdue_since = None
@@ -1920,6 +2136,13 @@ class DashboardPage(Page):
         low = {p.lower() for p in svc}
         own = [p for p in session.get("processes", []) if isinstance(p, str) and p.lower() not in low]
         return clean_apps(own), svc
+
+    def _add_block(self):
+        """Add services or hostnames to the running session through the elevated helper."""
+        session = state.load_session()
+        if not state.session_is_active(session):
+            return
+        AddBlockDialog(self.app, session)
 
     def _edit_apps(self):
         """Add or remove hand-picked apps while the session runs. Only the GUI closes apps, so this needs no
@@ -3103,6 +3326,13 @@ class HelpPage(Page):
              "feature. Replies stream in and the conversation stays on this PC. By default the assistant also sees a "
              "short summary of the current session, your focus stats and the names of your saved lists (never file "
              "paths or hostnames); turn that off in Settings. Enter sends, Shift+Enter adds a line, Ctrl+7 opens it.")
+        card(ICON["globe"], "Changing a running session",
+             "The session screen's Details card has two buttons. Add to block takes more services or hostnames: "
+             "pick them like in the builder, see exactly which ones are new, then Windows asks once for "
+             "administrator approval and the hosts file is rewritten (during a free window the names are recorded "
+             "and blocked when the window ends). Apps to close adds or removes programs that are closed while this "
+             "window is open; no approval is needed and the apps you add are remembered for your next session. "
+             "Nothing can be removed from a running block: that is the point.")
         card(ICON["calendar"], "Long-term blocks and weekly schedules",
              "Long-term blocks run for days to months. A weekly schedule stays on all week and lifts only in the "
              "free windows you choose per weekday (the default is Friday from 15:00 plus Saturday and Sunday). "

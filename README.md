@@ -67,6 +67,8 @@ single-user PC.
   without one, the built-in catalog is used.
 - **Assistant.** A chat page that talks to the same AI. Plan the afternoon, split a task into Pomodoro chunks, talk
   through a distraction. Replies stream in, Stop cancels, and an optional short session summary gives it context.
+- **Add to a running session.** The session screen has "Add to block" (services or hostnames, applied through
+  one administrator prompt and picked up by the enforcement task) and "Apps to close" (no prompt needed).
 - **Three kinds of session.** A timer (minutes to hours, or an exact date and time), a long-term block (2 days to 3
   months) and a weekly schedule that stays blocked all week and lifts only in the free windows you pick per weekday,
   repeating for up to 52 weeks. Switching happens automatically within a minute, with the app closed.
@@ -106,7 +108,9 @@ The app itself never runs elevated. It lists exactly what it needs on the Review
   itself, the hosts file, the app folder and the state folder are refused, by the GUI and again by the helper. Paths
   that are, or lie under, a symbolic link or junction are refused too.
 - **The helper trusts nothing.** It re-validates the plan (session id, restore time, list shapes and sizes, option
-  types, every hostname and path) and refuses a plan outside the state folder or behind a link. Recorded file paths
+  types, every hostname and path) and refuses a plan outside the state folder or behind a link. The same applies
+  to "Add to block": the request must name the running session, and only valid, unprotected hostnames and
+  program names are merged, with the hosts file backed up before the rewrite. Recorded file paths
   go through the guard again at restore time, DoH restore only writes the five known policy values, and system tools
   are run from `System32` by absolute path, so an edited state file cannot point the elevated helper anywhere else.
 - **Protected names.** Hostnames that would break Windows or sign-in (localhost, microsoft.com, google.com, ...) are

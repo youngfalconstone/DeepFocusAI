@@ -90,6 +90,34 @@ def test_apply_enforce_restore():
     assert json.loads(result2.read_text()).get("skipped") and hostsfile.has_block(hosts.read_text())
     print("if-expired skip ok")
 
+    # add to the running session: new hostnames written at once, invalid/protected entries dropped with a reason,
+    # a request for another session id or a malformed request refused
+    ext = HOME / "extend.json"
+    rx = HOME / "rx.json"
+    ext.write_text(json.dumps({"id": s["id"], "hostnames": ["Reddit.com", "localhost", "not a host", "example.com"],
+                               "services": ["reddit", "Bad Key!"],
+                               "processes": ["Foo.exe", "bad/exe", "explorer.exe", "foo.exe"]}))
+    assert helper.extend(str(ext), str(rx)) == 0
+    x = json.loads(rx.read_text())
+    assert x["ok"] and x["added"] == 1 and x["total"] == 3 and not x["paused"], x
+    assert any("localhost" in w for w in x["warnings"]) and any("not a host" in w for w in x["warnings"])
+    assert any("explorer.exe" in w for w in x["warnings"]) and any("bad/exe" in w for w in x["warnings"]), x["warnings"]
+    text = hosts.read_text()
+    assert "0.0.0.0 reddit.com" in text and "0.0.0.0 example.com" in text and "127.0.0.1 localhost" in text
+    s = state.load_session()
+    assert s["hostnames"] == ["example.com", "www.example.com", "reddit.com"], s["hostnames"]
+    assert s["services"] == ["custom", "reddit"] and s["processes"] == ["Foo.exe"], (s["services"], s["processes"])
+    assert len(list(paths.BACKUP_DIR.glob("hosts_*.bak"))) >= 2, "extend must back the hosts file up too"
+    ext.write_text(json.dumps({"id": "someone-else", "hostnames": ["x.com"]}))
+    assert helper.extend(str(ext), str(rx)) == 2 and "running session" in json.loads(rx.read_text())["error"]
+    ext.write_text(json.dumps({"id": s["id"], "hostnames": "x.com"}))
+    assert helper.extend(str(ext), str(rx)) == 2 and "list of strings" in json.loads(rx.read_text())["error"]
+    ext.write_text("[]")
+    assert helper.extend(str(ext), str(rx)) == 2
+    assert helper.extend(str(Path.home() / "nowhere.json"), str(rx)) == 2, "extension file must live in the state folder"
+    assert state.load_session()["hostnames"] == s["hostnames"], "refused requests change nothing"
+    print("extend ok")
+
     # tamper with everything, then enforce must put it back
     hostsfile.write_hosts(hosts, hostsfile.strip_block(hosts.read_text())[0])
     filehide.set_attrs(str(secret), before)
@@ -125,6 +153,8 @@ def test_apply_enforce_restore():
     assert secret.read_text() == "keep me", "lock must be gone"
     assert not notif.is_blocked(), "notifications switch must be restored"
     assert state.load_session() is None
+    ext.write_text(json.dumps({"id": s["id"], "hostnames": ["x.com"]}))
+    assert helper.extend(str(ext), str(rx)) == 2 and "no running session" in json.loads(rx.read_text())["error"]
     hist = state.load_history()
     assert len(hist) == 1 and hist[0]["end_reason"] == "scheduled"
     try:

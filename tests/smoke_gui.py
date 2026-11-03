@@ -34,7 +34,8 @@ if not os.environ.get("DEEPFOCUS_HOSTS"):
 from datetime import datetime  # noqa: E402
 
 from deepfocus import catalog, schedule, state  # noqa: E402
-from deepfocus.app import AIBlockDialog, App, AppsDialog, Plan, ReviewDialog, clean_apps, normalise_app_input  # noqa: E402
+from deepfocus.app import (AddBlockDialog, AIBlockDialog, App, AppsDialog, Plan, ReviewDialog,  # noqa: E402
+                           clean_apps, normalise_app_input)
 
 errors: list[str] = []
 
@@ -153,6 +154,22 @@ def main():
             fake = {"services": ["discord"], "processes": ["Discord.exe", "DiscordPTB.exe", "Steam.exe"]}
             own, svc = app.pages["dashboard"].session_apps(fake)
             assert own == ["Steam.exe"] and "Discord.exe" in svc
+            # "Add to block" dialog: only hostnames the session does not have yet, services and processes carried
+            sess = {"id": "abc123", "status": "active", "services": ["discord"],
+                    "hostnames": ["discord.com", "www.discord.com", "news.example.com"], "processes": ["Discord.exe"]}
+            ab = AddBlockDialog(app, sess)
+            assert not ab.btn_apply.enabled
+            ab.search.set("reddit"); ab.find()
+            ab.add_service(catalog.get("reddit"))
+            ab.add_service(catalog.get("discord"))           # already in the session: nothing new from it
+            ab.add_host.set("news.example.com"); ab.add_custom_host()   # already blocked
+            ab.add_host.set("Fresh.Example.org"); ab.add_custom_host()
+            pl = ab.payload()
+            assert pl["id"] == "abc123" and "reddit.com" in pl["hostnames"] and "fresh.example.org" in pl["hostnames"]
+            assert "discord.com" not in pl["hostnames"] and "news.example.com" not in pl["hostnames"]
+            assert pl["services"] == ["reddit"] and ab.already() >= 3 and ab.btn_apply.enabled
+            assert ab.list.size() == len(pl["hostnames"])
+            ab.destroy()
             assert normalise_app_input("explorer.exe") == "explorer.exe" and normalise_app_input("") is None
             # long-term and weekly modes
             b.mode_var.set("long"); b._mode_changed()

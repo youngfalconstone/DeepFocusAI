@@ -6,5 +6,5 @@ time through the Windows Task Scheduler, so a crash, reboot or closed window can
 never leave the machine in a blocked state.
 """
 
-__version__ = "1.6.1"
+__version__ = "1.7.0"
 APP_NAME = "DeepFocus AI"
