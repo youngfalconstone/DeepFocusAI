@@ -824,6 +824,122 @@ def simple_prompt(app: App, title: str, prompt: str, initial: str = "", ok_text:
     return out["v"]
 
 
+def validate_app(app: App, raw: str, interactive: bool = True) -> str | None:
+    """User input for an app to close, as a normalised exe name, or None when it is refused. With `interactive`
+    the refusal (invalid name, Windows process) is explained in a box and browsers ask for confirmation."""
+    exe = normalise_app_input(raw)
+    if not exe:
+        if interactive:
+            messagebox.showwarning(APP_NAME, f"\"{aiblock.clean_text(raw, 80)}\" is not a valid program name. Use the "
+                                   "executable name, for example Spotify.exe.", parent=app)
+        return None
+    status, why = aiblock.app_status(exe)
+    if status == "protected":
+        if interactive:
+            messagebox.showwarning(APP_NAME, f"{exe} will not be added. {why}", parent=app)
+        return None
+    if status == "broad" and interactive and not messagebox.askyesno(
+            APP_NAME, f"{exe} is a web browser. Closing it every 2 seconds affects everything you do online, "
+            "not just one service. Add it anyway?", parent=app):
+        return None
+    return exe
+
+
+def running_apps_menu(app: App, anchor, exclude: list[str], on_pick) -> None:
+    """Popup of the programs running right now (system processes, browsers and `exclude` left out)."""
+    have = {p.lower() for p in exclude}
+    names = sorted({n for n in procwatch.running_images()
+                    if n.endswith(".exe") and n not in have and aiblock.app_status(n)[0] == "ok"})
+    items = [(n, (lambda n=n: on_pick(n))) for n in names[:40]]
+    if not items:
+        items = [("No other programs are running", None)]
+    popup_menu(anchor, app.theme, items, anchor.winfo_rootx(), anchor.winfo_rooty() + anchor.winfo_height() + 4)
+
+
+class AppsDialog(ModalDialog):
+    """Edit the apps that are closed during a session: the ones added by hand can be added and removed, the ones
+    that come with a blocked service are shown but fixed. `on_save` receives the new hand-added list."""
+
+    def __init__(self, app: App, own: list[str], service_apps: list[str], on_save):
+        super().__init__(app, "Apps to close", 640, 520)
+        t = self.theme
+        self.own = list(own)
+        self.service_apps = list(service_apps)
+        self.on_save = on_save
+        b = self.body
+        label(b, t, "Apps to close", "h1").pack(anchor="w")
+        label(b, t, "Closed every 2 seconds while the DeepFocus window is open. Apps you add here are remembered "
+              "for your next session.", "small", "muted", wraplength=580, justify="left").pack(anchor="w", pady=(0, 12))
+        r = row(b)
+        self.add = Field(r, t, placeholder="App name or exe, e.g. Spotify or Spotify.exe")
+        self.add.pack(side="left", fill="x", expand=True)
+        self.add.bind_return(self.add_name)
+        Button(r, t, "Add", self.add_name, kind="standard", padx=14).pack(side="left", padx=(8, 0))
+        self.btn_running = Button(r, t, "Running now", self.running, kind="standard", padx=10, icon=ICON["list"])
+        self.btn_running.pack(side="left", padx=(8, 0))
+        Button(r, t, "Browse", self.browse, kind="standard", padx=10, icon=ICON["folder"]).pack(side="left", padx=(8, 0))
+        hr = row(b, pady=(12, 4))
+        self.count = label(hr, t, "", "small", "muted")
+        self.count.pack(side="left")
+        Button(hr, t, "Remove selected", self.remove, kind="subtle", font="small", padx=10, pady=4).pack(side="right")
+        lp = ListPanel(b, t, height=8)
+        lp.pack(fill="both", expand=True)
+        self.list = lp.list
+        self.buttons([("Cancel", self.destroy, "standard"), ("Save", self.save, "primary")])
+        self.add.focus()
+        self.refresh()
+
+    def all_apps(self) -> list[str]:
+        seen = {a.lower() for a in self.own}
+        return self.own + [p for p in self.service_apps if p.lower() not in seen]
+
+    def refresh(self):
+        self.list.delete(0, "end")
+        for a in self.own:
+            self.list.insert("end", a)
+        low = {a.lower() for a in self.own}
+        for p in self.service_apps:
+            if p.lower() not in low:
+                self.list.insert("end", f"{p}   (from a blocked service)")
+        extra = f", {len(self.own)} added by you" if self.own else ""
+        self.count.configure(text=f"Apps to close ({len(self.all_apps())}{extra})")
+
+    def _add(self, raw: str, interactive: bool = True) -> bool:
+        exe = validate_app(self.app, raw, interactive)
+        if not exe or exe.lower() in {a.lower() for a in self.all_apps()}:
+            return False
+        self.own.append(exe)
+        self.refresh()
+        return True
+
+    def add_name(self):
+        raw = self.add.value().strip()
+        if raw and (self._add(raw) or normalise_app_input(raw)):
+            self.add.clear()
+
+    def running(self):
+        running_apps_menu(self.app, self.btn_running, self.all_apps(), self._add)
+
+    def browse(self):
+        p = filedialog.askopenfilename(parent=self, title="Program to close during the session",
+                                       filetypes=[("Programs", "*.exe"), ("All files", "*.*")])
+        if p:
+            self._add(p)
+
+    def remove(self):
+        sel = {self.list.get(i).split("   (")[0] for i in self.list.curselection()}
+        own = {a for a in self.own if a in sel}
+        if len(sel) > len(own):
+            messagebox.showinfo(APP_NAME, "Apps that come from a blocked service stay until the session ends.",
+                                parent=self)
+        self.own = [a for a in self.own if a not in own]
+        self.refresh()
+
+    def save(self):
+        self.on_save(list(self.own))
+        self.destroy()
+
+
 class AIBlockDialog(ModalDialog):
     """Type a service name, get an AI-suggested block list (domains, apps, files), review every entry, then save
     it as a named list that the Block dropdown, the builder and presets treat like a built-in service."""
@@ -1781,6 +1897,8 @@ class DashboardPage(Page):
         txt = (f"Services: {svc}\nApps being closed: {procs}\nProtection: {', '.join(prot)}{plan_line}"
                f"\nHosts backup: {session.get('hosts_backup') or 'none'}")
         label(details.body, t, txt, "tiny", "muted", wraplength=400, justify="left").pack(anchor="w")
+        Button(details.body, t, "Apps to close", self._edit_apps, kind="standard", font="small", padx=10, pady=4,
+               icon=ICON["cross"]).pack(anchor="w", pady=(10, 0))
 
         self.restore_btn = None
         self._overdue_since = None
@@ -1790,6 +1908,47 @@ class DashboardPage(Page):
         self._animate_ring(self._anim_gen)
         self._tick()
         return sc
+
+    @staticmethod
+    def session_apps(session: dict) -> tuple[list[str], list[str]]:
+        """(apps added by hand, apps that come with the session's services) for a session record."""
+        svc = []
+        for k in session.get("services", []):
+            s = catalog.get(k)
+            if s:
+                svc.extend(p for p in s.processes if p.lower() not in {x.lower() for x in svc})
+        low = {p.lower() for p in svc}
+        own = [p for p in session.get("processes", []) if isinstance(p, str) and p.lower() not in low]
+        return clean_apps(own), svc
+
+    def _edit_apps(self):
+        """Add or remove hand-picked apps while the session runs. Only the GUI closes apps, so this needs no
+        elevation: the session record is updated, the watcher restarted, and the list remembered for next time."""
+        session = state.load_session()
+        if not state.session_is_active(session):
+            return
+        own, svc = self.session_apps(session)
+
+        def save(new_own: list[str]):
+            s = state.load_session()
+            if not state.session_is_active(s):
+                return
+            seen: set[str] = set()
+            merged = []
+            for p in svc + new_own:
+                if p.lower() not in seen:
+                    seen.add(p.lower())
+                    merged.append(p)
+            s["processes"] = merged
+            s.setdefault("options", {})["process_watch"] = True
+            state.save_session(s)
+            self.app.settings["remembered_apps"] = list(new_own)
+            state.save_settings(self.app.settings)
+            self.app.resume_watcher(s)
+            self.app.set_status(f"Closing {len(merged)} app(s)", "active")
+            self.refresh()
+
+        AppsDialog(self.app, own, svc, save)
 
     def _layout_session(self, w: int, h: int):
         """Overlay of the session hero: title, status line, ring with countdown, two pill buttons."""
@@ -2568,20 +2727,8 @@ class BuilderPage(Page):
         state.save_settings(self.app.settings)
 
     def _add_app(self, raw: str, interactive: bool = True) -> bool:
-        exe = normalise_app_input(raw)
+        exe = validate_app(self.app, raw, interactive)
         if not exe:
-            if interactive:
-                messagebox.showwarning(APP_NAME, f"\"{aiblock.clean_text(raw, 80)}\" is not a valid program name. Use the "
-                                       "executable name, for example Spotify.exe.", parent=self.app)
-            return False
-        status, why = aiblock.app_status(exe)
-        if status == "protected":
-            if interactive:
-                messagebox.showwarning(APP_NAME, f"{exe} will not be added. {why}", parent=self.app)
-            return False
-        if status == "broad" and interactive and not messagebox.askyesno(
-                APP_NAME, f"{exe} is a web browser. Closing it every 2 seconds affects everything you do online, "
-                "not just one service. Add it anyway?", parent=self.app):
             return False
         added = self.plan.add_app(exe)
         self._remember_apps()
@@ -2603,14 +2750,7 @@ class BuilderPage(Page):
 
     def running_apps(self):
         """Pick from the programs running right now (system processes and the already added ones left out)."""
-        have = {p.lower() for p in self.plan.processes()}
-        names = sorted({n for n in procwatch.running_images()
-                        if n.endswith(".exe") and n not in have and aiblock.app_status(n)[0] == "ok"})
-        items = [(n, (lambda n=n: self._add_app(n))) for n in names[:40]]
-        if not items:
-            items = [("No other programs are running", None)]
-        b = self.btn_running
-        popup_menu(b, self.theme, items, b.winfo_rootx(), b.winfo_rooty() + b.winfo_height() + 4)
+        running_apps_menu(self.app, self.btn_running, self.plan.processes(), self._add_app)
 
     def remove_apps(self):
         sel = {self.app_list.get(i).split("   (")[0] for i in self.app_list.curselection()}

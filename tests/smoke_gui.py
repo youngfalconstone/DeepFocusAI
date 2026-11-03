@@ -34,7 +34,7 @@ if not os.environ.get("DEEPFOCUS_HOSTS"):
 from datetime import datetime  # noqa: E402
 
 from deepfocus import catalog, schedule, state  # noqa: E402
-from deepfocus.app import AIBlockDialog, App, Plan, ReviewDialog, clean_apps, normalise_app_input  # noqa: E402
+from deepfocus.app import AIBlockDialog, App, AppsDialog, Plan, ReviewDialog, clean_apps, normalise_app_input  # noqa: E402
 
 errors: list[str] = []
 
@@ -140,6 +140,19 @@ def main():
             b.app_list.selection_set(0); b.remove_apps()
             assert b.plan.apps == ["MyGame.exe"] and app.settings["remembered_apps"] == ["MyGame.exe"]
             assert clean_apps(["explorer.exe", "Discord", 5, "Discord.exe", "bad/name?.exe"]) == ["Discord.exe"]
+            # the mid-session editor: own apps editable, service apps fixed, Save hands back the own list
+            got = {}
+            d = AppsDialog(app, ["MyGame.exe"], ["Discord.exe"], lambda own: got.update(own=own))
+            d.add.set("Spotify"); d.add_name()
+            d.add.set("discord.exe"); d.add_name()   # already there via the service: no duplicate
+            assert d.own == ["MyGame.exe", "Spotify.exe"] and d.all_apps() == ["MyGame.exe", "Spotify.exe", "Discord.exe"]
+            d.list.selection_set(0); d.remove()
+            assert d.own == ["Spotify.exe"]
+            d.save()
+            assert got["own"] == ["Spotify.exe"]
+            fake = {"services": ["discord"], "processes": ["Discord.exe", "DiscordPTB.exe", "Steam.exe"]}
+            own, svc = app.pages["dashboard"].session_apps(fake)
+            assert own == ["Steam.exe"] and "Discord.exe" in svc
             assert normalise_app_input("explorer.exe") == "explorer.exe" and normalise_app_input("") is None
             # long-term and weekly modes
             b.mode_var.set("long"); b._mode_changed()
