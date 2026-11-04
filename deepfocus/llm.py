@@ -35,6 +35,19 @@ MAX_MESSAGE_CHARS = 8_000        # one chat message
 MAX_HISTORY_CHARS = 48_000       # all chat history sent in one request
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect. urllib would otherwise re-send the request, API key header included, to whatever
+    host the endpoint pointed at; the key is only ever sent to the endpoint that was configured."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise LLMError("bad_response", "The AI endpoint tried to redirect the request, which is not allowed: the API "
+                                       "key is only sent to the configured endpoint. Check the endpoint in Settings.")
+
+
+def _open(req, timeout: float):
+    return urllib.request.build_opener(_NoRedirect).open(req, timeout=timeout)
+
+
 def validate_base_url(url: str) -> str | None:
     """Why an endpoint override must not be used, or None. Keys only travel over https, except to this machine."""
     from urllib.parse import urlparse
@@ -124,7 +137,7 @@ def _post(url: str, headers: dict, body: dict, timeout: float) -> tuple[int, str
     req = urllib.request.Request(url, data=data, method="POST", headers={"Content-Type": "application/json",
                                                                          "User-Agent": "DeepFocusAI/1.4", **headers})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _open(req, timeout) as resp:
             raw = resp.read(MAX_RESPONSE_BYTES + 1)
             if len(raw) > MAX_RESPONSE_BYTES:
                 raise LLMError("bad_response", "The AI service sent an answer that is far too large.")
@@ -278,7 +291,7 @@ def _open_stream(url: str, headers: dict, body: dict, timeout: float):
                                  headers={"Content-Type": "application/json", "Accept": "text/event-stream",
                                           "User-Agent": "DeepFocusAI/1.5", **headers})
     try:
-        return urllib.request.urlopen(req, timeout=timeout)
+        return _open(req, timeout)
     except urllib.error.HTTPError as e:
         try:
             text = e.read().decode("utf-8", errors="replace")

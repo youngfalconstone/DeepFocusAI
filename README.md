@@ -38,8 +38,10 @@ To uninstall, end any running session, then delete the folder.
 
 **Where to put it**: the scheduled tasks run the helper with administrator rights from wherever the exe lives. On a
 PC shared with other accounts, or if you do not trust every program that runs under your own account, keep it in a
-folder only administrators can write to, such as `C:\Program Files`. The default per-user location is fine for a
-single-user PC.
+folder only administrators can write to, such as `C:\Program Files`: a program that can write to the app folder
+could otherwise swap the exe and have Task Scheduler run it elevated. The default per-user location is fine for a
+single-user PC. The app says so once when a session starts from a writable folder, and the integrity check under
+Settings repeats it.
 
 ## Screenshots
 
@@ -113,12 +115,15 @@ The app itself never runs elevated. It lists exactly what it needs on the Review
   program names are merged, with the hosts file backed up before the rewrite. Recorded file paths
   go through the guard again at restore time, DoH restore only writes the five known policy values, and system tools
   are run from `System32` by absolute path, so an edited state file cannot point the elevated helper anywhere else.
+  The helper's result file may only be written inside the state folder, and the command line handed to it is
+  escaped with the C runtime's own rules, so no name or path can smuggle extra arguments to the elevated process.
 - **Protected names.** Hostnames that would break Windows or sign-in (localhost, microsoft.com, google.com, ...) are
   never written.
 - **Hosts backups** before every change (newest 20), atomic writes that preserve the file's bytes and line endings.
 - **AI features.** Only the typed name (AI Block) or your messages plus an optional short summary (Assistant) leave
-  the machine. Endpoints must be https, responses and history are size-capped, model text is sanitised before it
-  reaches the screen, and the key lives only in the Windows Credential Manager.
+  the machine. Endpoints must be https, redirects are refused (the key is sent to the configured endpoint and nowhere
+  else), responses and history are size-capped, model text is sanitised before it reaches the screen, and the key
+  lives only in the Windows Credential Manager.
 - **Cooling-off.** Ending early needs a countdown (default 30 s); strict mode also requires typing a phrase.
 
 What is not protected: anyone with administrator rights can still stop a session by deleting the tasks and editing

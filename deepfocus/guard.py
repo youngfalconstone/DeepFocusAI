@@ -124,7 +124,46 @@ def state_dir_problem() -> str | None:
         return f"the state folder {sd} is, or lies under, a symbolic link or junction"
     if os.path.exists(sd) and not os.path.isdir(sd):
         return f"the state folder {sd} is not a folder"
+    # the helper also copies into and deletes from these two; a link planted there would redirect that elsewhere
+    for sub in (paths.BACKUP_DIR, paths.RESULTS_DIR):
+        if os.path.lexists(sub) and (_is_link(str(sub)) or not os.path.isdir(sub)):
+            return f"{sub} is a link or is not a folder"
     return None
+
+
+def install_dir_problem() -> str | None:
+    """Why the folder the helper runs from is a weak spot, or None.
+
+    The scheduled tasks run the helper with administrator rights from wherever the executable lives. If the
+    ordinary account can write to that folder, any program running as that account could replace the executable
+    and have Task Scheduler run its own code elevated, without a UAC prompt. Called by the GUI (unelevated), so
+    the write test reflects what the ordinary account can do. Folders only administrators can write to by
+    default (Program Files, Windows) are accepted without a test."""
+    exe, _ = paths.helper_command()
+    try:
+        folder = Path(exe).resolve().parent
+    except OSError:
+        return None
+    n = _norm(folder)
+    for var in ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "SystemRoot"):
+        root = _env_path(var)
+        if root and _is_within(n, _norm(root)):
+            return None
+    probe = folder / f".deepfocus_write_test_{os.getpid()}"
+    try:
+        with open(probe, "w"):
+            pass
+    except OSError:
+        return None
+    try:
+        probe.unlink()
+    except OSError:
+        pass
+    return (f"DeepFocus runs from {folder}, a folder your account can write to. The scheduled tasks run the helper "
+            "there with administrator rights, so a program running under your account could replace it and gain "
+            "those rights. Fine on a PC that is yours alone; on a shared PC, or if you do not trust every program "
+            "that runs as you, move DeepFocus to a folder only administrators can write to, such as "
+            "C:\\Program Files.")
 
 
 def filter_paths(items: list[str]) -> tuple[list[str], list[str]]:

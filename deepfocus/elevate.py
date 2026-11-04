@@ -54,10 +54,11 @@ def is_admin() -> bool:
         return False
 
 
-def _quote(arg: str) -> str:
-    if not arg or any(c in arg for c in ' \t"'):
-        return '"' + arg.replace('"', '\\"') + '"'
-    return arg
+def _command_line(args: list[str]) -> str:
+    """One command line from a list of arguments, escaped the way CommandLineToArgvW splits it again (quotes and
+    runs of backslashes handled exactly as the C runtime expects), so a path or name with an unusual character can
+    never be split into extra arguments for the elevated helper."""
+    return subprocess.list2cmdline(args)
 
 
 def run_helper(args: list[str], timeout: float = 180.0) -> dict:
@@ -66,7 +67,7 @@ def run_helper(args: list[str], timeout: float = 180.0) -> dict:
     result_path = paths.RESULTS_DIR / f"{uuid.uuid4().hex}.json"
     exe, lead = paths.helper_command()
     full_args = [*lead, *args, "--result", str(result_path)]
-    params = " ".join(_quote(a) for a in full_args)
+    params = _command_line(full_args)
 
     if is_admin():
         # Already elevated (rare): run directly.

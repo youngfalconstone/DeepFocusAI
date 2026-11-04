@@ -34,7 +34,7 @@ def desktop_dir() -> Path:
 
 def open_folder(p: Path) -> None:
     try:
-        subprocess.Popen(["explorer.exe", str(p)])
+        subprocess.Popen([str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "explorer.exe"), str(p)])
     except OSError:
         pass
 
@@ -3126,6 +3126,12 @@ class BuilderPage(Page):
                 if not res.get("task"):
                     warn.append("The scheduled restore task could not be registered. Keep this app open, or use "
                                 "Settings > Emergency restore when you finish.")
+                hint = guard.install_dir_problem()
+                if hint and not self.app.settings.get("install_dir_warned"):
+                    # said once; the integrity check under Settings repeats it on request
+                    warn.append(hint)
+                    self.app.settings["install_dir_warned"] = True
+                    state.save_settings(self.app.settings)
                 if warn:
                     messagebox.showwarning(APP_NAME, msg + "\n\nWarnings:\n- " + "\n- ".join(warn), parent=self.app)
                 self.app.toast(APP_NAME, "Focus session started. " + msg)
@@ -3908,7 +3914,8 @@ class SettingsPage(Page):
 
         def exists(name):
             try:
-                return subprocess.run(["schtasks", "/Query", "/TN", name], capture_output=True,
+                return subprocess.run([str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
+                                           / "schtasks.exe"), "/Query", "/TN", name], capture_output=True,
                                       creationflags=0x08000000, timeout=10).returncode == 0
             except Exception:
                 return False
@@ -3951,6 +3958,9 @@ class SettingsPage(Page):
             msg = "No active session. " + ("Everything is clean." if not problems else
                                            "Leftovers found: " + "; ".join(problems) + ". Use Emergency restore.")
             kind = "muted" if not problems else "warn"
+        if guard.install_dir_problem():
+            msg += (" Note: the app folder is writable by your account, so the elevated scheduled tasks could run a "
+                    "swapped executable. See 'Where to put it' in the README.")
         self.integrity.configure(text=msg, fg=self.theme[kind])
 
     def emergency(self):

@@ -50,8 +50,22 @@ def _run(cmd: list[str]) -> tuple[int, str]:
     return p.returncode, (p.stdout or "") + (p.stderr or "")
 
 
+def _result_path_ok(path: str) -> bool:
+    """The result file must live inside the state folder and must not be reached through a link. The helper is
+    elevated, so whatever the command line names, it never writes anywhere else."""
+    try:
+        real = os.path.normcase(os.path.realpath(path))
+        sd = os.path.normcase(os.path.realpath(str(paths.STATE_DIR)))
+    except (OSError, ValueError):
+        return False
+    return real.startswith(sd.rstrip("\\") + "\\") and not guard.has_link(path)
+
+
 def _write_result(path: str | None, data: dict) -> None:
     if not path:
+        return
+    if not _result_path_ok(path):
+        state.log(f"result path refused (outside the state folder or behind a link): {path}")
         return
     try:
         Path(path).parent.mkdir(parents=True, exist_ok=True)

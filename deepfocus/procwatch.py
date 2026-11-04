@@ -5,12 +5,19 @@ and hidden files do not depend on it.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import threading
 import time
+from pathlib import Path
 from typing import Callable
 
 CREATE_NO_WINDOW = 0x08000000
+
+
+def _sys(tool: str) -> str:
+    """Absolute path of a Windows tool, so nothing is resolved through PATH or the current folder."""
+    return str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / tool)
 
 BROWSERS = ["chrome.exe", "msedge.exe", "brave.exe", "firefox.exe", "opera.exe", "opera_gx.exe", "vivaldi.exe",
             "arc.exe", "iexplore.exe"]
@@ -18,7 +25,7 @@ BROWSERS = ["chrome.exe", "msedge.exe", "brave.exe", "firefox.exe", "opera.exe",
 
 def running_images() -> set[str]:
     try:
-        p = subprocess.run(["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True,
+        p = subprocess.run([_sys("tasklist.exe"), "/FO", "CSV", "/NH"], capture_output=True, text=True,
                            creationflags=CREATE_NO_WINDOW, timeout=10)
     except (subprocess.SubprocessError, OSError):
         return set()
@@ -31,7 +38,7 @@ def running_images() -> set[str]:
 
 def kill(image: str) -> bool:
     try:
-        p = subprocess.run(["taskkill", "/F", "/IM", image, "/T"], capture_output=True, text=True,
+        p = subprocess.run([_sys("taskkill.exe"), "/F", "/IM", image, "/T"], capture_output=True, text=True,
                            creationflags=CREATE_NO_WINDOW, timeout=15)
         return p.returncode == 0
     except (subprocess.SubprocessError, OSError):

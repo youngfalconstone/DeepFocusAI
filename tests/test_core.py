@@ -151,13 +151,53 @@ def test_guard():
         else:
             print("  (mklink /J not permitted here, link test skipped)")
         assert guard.state_dir_problem() is None
+        # a junction where the backups folder should be must stop the helper
+        if r.returncode == 0:
+            bdir = paths.BACKUP_DIR
+            if bdir.exists() and not bdir.is_junction():
+                bdir.rmdir()
+            rb = subprocess.run(["cmd", "/c", "mklink", "/J", str(bdir), str(target)], capture_output=True,
+                                text=True, creationflags=0x08000000)
+            try:
+                assert rb.returncode == 0 and "link" in (guard.state_dir_problem() or "")
+            finally:
+                subprocess.run(["cmd", "/c", "rmdir", str(bdir)], capture_output=True)
+            assert guard.state_dir_problem() is None
     finally:
         if link.exists():
             subprocess.run(["cmd", "/c", "rmdir", str(link)], capture_output=True)
         (target / "file.txt").unlink(missing_ok=True)
         target.rmdir()
         base.rmdir()
+    # the install-folder check never raises and, when it warns, names the folder the helper runs from
+    hint = guard.install_dir_problem()
+    assert hint is None or str(Path(paths.helper_command()[0]).resolve().parent) in hint, hint
     print("guard ok")
+
+
+def test_result_path():
+    """The elevated helper writes its result only inside the state folder, whatever the command line says."""
+    from deepfocus import helper
+    inside = paths.STATE_DIR / "results" / "r.json"
+    outside = Path(tempfile.gettempdir()) / "deepfocus_outside_result.json"
+    outside.unlink(missing_ok=True)
+    helper._write_result(str(inside), {"ok": True})
+    helper._write_result(str(outside), {"ok": True})
+    assert inside.exists() and not outside.exists()
+    assert not helper._result_path_ok(str(paths.STATE_DIR) + "_sibling\\r.json"), "prefix trick must not pass"
+    inside.unlink()
+    print("result path ok")
+
+
+def test_toast_script():
+    """Toast text is XML-escaped and placed in a single-quoted here-string, so PowerShell never evaluates it."""
+    from deepfocus import notify
+    s = notify.script_for("Title $(Get-Date)", "body $env:USERNAME <b>&amp;</b>\nsecond line")
+    assert "$xml = @'" in s and "\n'@" in s, "XML must sit in a single-quoted here-string"
+    assert "$(Get-Date)" in s and "$env:USERNAME" in s, "expressions must survive as literal text"
+    assert "&lt;b&gt;&amp;amp;" in s and "\nsecond" not in s, "escaped and folded to one line"
+    assert notify._powershell().lower().endswith("\\windowspowershell\\v1.0\\powershell.exe")
+    print("toast script ok")
 
 
 def test_safe_records():
@@ -375,6 +415,8 @@ if __name__ == "__main__":
     test_filehide()
     test_lock()
     test_guard()
+    test_result_path()
+    test_toast_script()
     test_plan_validation()
     test_safe_records()
     test_hosts_write_preserves_bytes()
